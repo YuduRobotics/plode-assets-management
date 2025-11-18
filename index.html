@@ -444,9 +444,11 @@
       },
 
       loginWithGitHub() {
-        const redirectUri = window.location.origin + window.location.pathname;
+        const redirectUri = 'https://pipeline.plode.org/plode-assets-backend/';
         const scope = 'repo';
-        window.location.href = `https://github.com/login/oauth/authorize?client_id=${CONFIG.GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=${scope}`;
+        window.location.href =
+          `https://github.com/login/oauth/authorize?client_id=${CONFIG.GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=${scope}`;
+
       },
 
       async handleOAuthCallback(code) {
