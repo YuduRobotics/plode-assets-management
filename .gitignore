@@ -9,3 +9,6 @@ bun.lock
 
 #environment variables
 .env
+
+# build output
+dist/

@@ -2,7 +2,16 @@
   "name": "plode-release-management",
   "version": "1.0.0",
   "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "webpack --config webpack.config.js",
+    "start": "node dist/server.bundle.cjs"
+  },
   "dependencies": {
     "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
   }
 }
