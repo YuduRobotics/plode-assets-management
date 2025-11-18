@@ -27,7 +27,7 @@ jobs:
       # --------------------------------------------------
       - name: Setup SSH Key
         run: |
-          echo "${{ secrets.SERVER_KEY }}" > server_key.pem
+          echo "${{ secrets.PRIVATE_KEY }}" > server_key.pem
           chmod 600 server_key.pem
 
       # --------------------------------------------------
