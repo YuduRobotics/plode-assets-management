@@ -1,0 +1,56 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Build project
+        run: |
+          npm install
+          npm run build
+
+      # --------------------------------------------------
+      # Create SSH key file from secret (.pem)
+      # --------------------------------------------------
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.SERVER_KEY }}" > server_key.pem
+          chmod 600 server_key.pem
+
+      # --------------------------------------------------
+      # Copy dist folder + index.html
+      # --------------------------------------------------
+      - name: Upload files to EC2
+        run: |
+          scp -i server_key.pem -o StrictHostKeyChecking=no \
+            -r dist/* \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.FILE_TARGET }}
+
+          scp -i server_key.pem -o StrictHostKeyChecking=no \
+            index.html \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.FILE_TARGET }}
+
+      # --------------------------------------------------
+      # PM2 restart
+      # --------------------------------------------------
+      # - name: Restart PM2 Service
+      #   run: |
+      #     ssh -i server_key.pem -o StrictHostKeyChecking=no \
+      #       ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+      #       "
+      #         source ~/.nvm/nvm.sh;
+      #         pm2 restart ${{ secrets.PM2_APP_NAME }};
+      #       "
