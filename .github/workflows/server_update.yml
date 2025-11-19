@@ -37,6 +37,4 @@ jobs:
         run: |
           ssh -i server_key.pem -o StrictHostKeyChecking=no \
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
-            "
-              sudo pm2 restart plode_assets_management;
-            "
+            sudo pm2 restart plode_assets_management;
