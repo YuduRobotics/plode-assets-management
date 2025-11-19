@@ -16,6 +16,30 @@
               300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6',
               600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a'
             }
+          },
+          animation: {
+            'slide-down': 'slideDown 0.3s ease-out',
+            'slide-up': 'slideUp 0.3s ease-out',
+            'fade-in': 'fadeIn 0.3s ease-out',
+            'fade-out': 'fadeOut 0.3s ease-out'
+          },
+          keyframes: {
+            slideDown: {
+              '0%': { transform: 'translateY(-100%)', opacity: '0' },
+              '100%': { transform: 'translateY(0)', opacity: '1' }
+            },
+            slideUp: {
+              '0%': { transform: 'translateY(0)', opacity: '1' },
+              '100%': { transform: 'translateY(-100%)', opacity: '0' }
+            },
+            fadeIn: {
+              '0%': { opacity: '0' },
+              '100%': { opacity: '1' }
+            },
+            fadeOut: {
+              '0%': { opacity: '1' },
+              '100%': { opacity: '0' }
+            }
           }
         }
       }
@@ -24,17 +48,37 @@
 </head>
 
 <body class="bg-gray-50">
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed top-0 left-0 right-0 z-50 flex justify-center p-4 pointer-events-none">
+    <div id="toast" class="hidden pointer-events-auto"></div>
+  </div>
+
   <div id="app"></div>
 
   <script type="module">
+    // Configuration - Update these values for your setup
     const CONFIG = {
       GITHUB_TOKEN: localStorage.getItem('github_token') || '',
+
+      // Repository Configuration
+      // For personal repo: set GITHUB_OWNER to your username
+      // For organization repo: set GITHUB_OWNER to organization name
       GITHUB_OWNER: 'Jovit-Mathew236',
       GITHUB_REPO: 'plode-release-management',
       GITHUB_BRANCH: 'main',
-      GITHUB_CLIENT_ID: 'Ov23liJJOak8gXXpOxCY',
-      // OAuth backend server URL
-      OAUTH_CALLBACK_URL: 'https://pipeline.plode.org/plode-assets-backend/api/auth'
+
+      // GitHub App Client ID
+      GITHUB_APP_CLIENT_ID: 'Iv23li4HwUVWfz52SZ0p',
+
+      // App URLs
+      APP_HOMEPAGE_URL: 'http://localhost:5500/',
+      APP_CALLBACK_URL: 'http://localhost:3000/',
+
+      // GitHub Actions workflow file name (optional)
+      // Set this to your workflow file name if you want to check Actions status after upload
+      // Leave empty ('') to disable workflow status checking and use simple refresh instead
+      // Note: Your workflow takes time to complete, so simple refresh might be better
+      WORKFLOW_FILE: 'update-meta-and-release.yml'  // Disabled - using simple refresh with delay
     };
 
     // Firmware folder structure (loaded from JSON file)
@@ -94,7 +138,7 @@
       }
 
       async createOrUpdateFile(path, content, message, sha = null) {
-        return this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
+        const response = await this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
           method: 'PUT',
           body: JSON.stringify({
             message,
@@ -103,13 +147,17 @@
             ...(sha && { sha })
           })
         });
+        // Return the full response including commit SHA
+        return response;
       }
 
       async deleteFile(path, message, sha) {
-        return this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
+        const response = await this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
           method: 'DELETE',
           body: JSON.stringify({ message, sha, branch: this.branch })
         });
+        // Return the full response including commit SHA
+        return response;
       }
 
       async deleteDirectory(path, message) {
@@ -141,11 +189,76 @@
           return false;
         }
       }
+
+      async getWorkflowRunByCommitSha(workflowFileName, commitSha) {
+        try {
+          // Get workflow runs, newest first
+          const data = await this.request(`/repos/${this.owner}/${this.repo}/actions/workflows/${workflowFileName}/runs?per_page=1`);
+          if (data.workflow_runs && data.workflow_runs.length > 0) {
+            // Find the workflow run that matches our commit SHA
+            const matchingRun = data.workflow_runs.find(run => run.head_sha === commitSha);
+            if (matchingRun) {
+              return matchingRun;
+            }
+          }
+          return null;
+        } catch (error) {
+          console.error('Error getting workflow runs:', error);
+          return null;
+        }
+      }
+
+      async waitForWorkflowCompletion(workflowFileName, commitSha, maxWaitTime = null) {
+        const pollInterval = 10000; // Check every 5 seconds
+        const startTime = Date.now();
+        let iteration = 0;
+
+        console.log(`Waiting for workflow run for commit: ${commitSha ? commitSha.substring(0, 7) : 'unknown'}`);
+
+        while (true) {
+          const run = await this.getWorkflowRunByCommitSha(workflowFileName, commitSha);
+
+          if (!run) {
+            // No workflow found, wait a bit and try again (might not have started yet)
+            if (iteration > 10) {
+              // After 50 seconds, give up looking for workflow
+              console.log('Workflow not found after 50 seconds, giving up');
+              return null;
+            }
+            console.log(`No workflow run found yet for commit ${commitSha.substring(0, 7)} (attempt ${iteration + 1}/10)`);
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+            iteration++;
+            continue;
+          }
+
+          console.log(`Workflow status: ${run.status}, conclusion: ${run.conclusion || 'null'}`);
+
+          if (run.status === 'completed') {
+            // Workflow completed, return the conclusion
+            console.log(`Workflow completed with conclusion: ${run.conclusion}`);
+            return {
+              status: run.status,
+              conclusion: run.conclusion, // success, failure, cancelled, etc.
+              url: run.html_url
+            };
+          }
+
+          // Check timeout only if maxWaitTime is set
+          if (maxWaitTime && (Date.now() - startTime) >= maxWaitTime) {
+            return { status: 'timeout', conclusion: null, url: run.html_url };
+          }
+
+          // Still running (queued, in_progress, etc.), wait before checking again
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          iteration++;
+        }
+      }
     }
 
-    // OAuth Helper
+    // GitHub App Authentication Helper
     async function exchangeCodeForToken(code) {
-      const response = await fetch(CONFIG.OAUTH_CALLBACK_URL, {
+      const authEndpoint = `${CONFIG.APP_CALLBACK_URL}api/auth`;
+      const response = await fetch(authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code })
@@ -185,6 +298,111 @@
 
     function formatDate(dateString) {
       return new Date(dateString).toLocaleString();
+    }
+
+    // Toast Notification System
+    let toastTimeout = null;
+
+    function showToast(message, type = 'info', duration = 5000) {
+      const toast = document.getElementById('toast');
+
+      // Clear any existing timeout
+      if (toastTimeout) {
+        clearTimeout(toastTimeout);
+      }
+
+      // Remove existing classes
+      toast.className = 'hidden pointer-events-auto';
+
+      // Define toast styles based on type
+      const styles = {
+        error: 'bg-red-600 text-white',
+        success: 'bg-green-600 text-white',
+        info: 'bg-blue-600 text-white',
+        warning: 'bg-yellow-500 text-white',
+        loading: 'bg-gray-800 text-white'
+      };
+
+      // Set toast content and style
+      toast.innerHTML = `
+        <div class="flex items-center gap-3 px-6 py-4 rounded-lg shadow-lg max-w-2xl ${styles[type]} animate-slide-down">
+          ${type === 'loading' ? `
+            <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          ` : type === 'success' ? `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+          ` : type === 'error' ? `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          ` : type === 'warning' ? `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+          ` : `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+          `}
+          <span class="font-medium">${message}</span>
+          ${type !== 'loading' ? `
+            <button onclick="hideToast()" class="ml-auto hover:opacity-75">
+              <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+          ` : ''}
+        </div>
+      `;
+
+      // Show toast
+      toast.classList.remove('hidden');
+
+      // Auto-hide after duration (unless it's a loading toast)
+      if (type !== 'loading' && duration > 0) {
+        toastTimeout = setTimeout(() => {
+          hideToast();
+        }, duration);
+      }
+    }
+
+    function hideToast() {
+      const toast = document.getElementById('toast');
+      const toastContent = toast.querySelector('div');
+
+      if (toastContent) {
+        toastContent.classList.remove('animate-slide-down');
+        toastContent.classList.add('animate-slide-up');
+
+        setTimeout(() => {
+          toast.classList.add('hidden');
+        }, 300);
+      }
+
+      if (toastTimeout) {
+        clearTimeout(toastTimeout);
+        toastTimeout = null;
+      }
+    }
+
+    // Make hideToast globally available
+    window.hideToast = hideToast;
+
+    // Helper function to show notifications based on state
+    function showNotification() {
+      if (state.error) {
+        showToast(state.error, 'error', 7000);
+      } else if (state.success) {
+        if (state.loading) {
+          showToast(state.success, 'loading', 0); // Don't auto-hide loading toasts
+        } else {
+          showToast(state.success, 'success', 5000);
+        }
+      }
     }
 
     // Components
@@ -466,11 +684,10 @@
       },
 
       loginWithGitHub() {
-        const redirectUri = 'https://pipeline.plode.org/plode-assets-backend/api/auth';
-        const scope = '(no scope)';
+        // GitHub App web application flow
+        const redirectUri = CONFIG.APP_HOMEPAGE_URL;
         window.location.href =
-          `https://github.com/login/oauth/authorize?client_id=${CONFIG.GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=${scope}`;
-
+          `https://github.com/login/oauth/authorize?client_id=${CONFIG.GITHUB_APP_CLIENT_ID}&redirect_uri=${redirectUri}`;
       },
 
       async handleOAuthCallback(code) {
@@ -722,6 +939,8 @@
           const firmwareName = state.selectedFirmware.name;
           const uploadPath = `${firmwareName}/${state.selectedUploadPath}`;
 
+          let lastCommitSha = null;
+
           for (const file of files) {
             const reader = new FileReader();
             await new Promise((resolve, reject) => {
@@ -736,7 +955,11 @@
                     sha = existing.sha;
                   } catch { }
 
-                  await api.createOrUpdateFile(filePath, content, `Upload ${file.name} to ${state.selectedUploadPath}`, sha);
+                  const result = await api.createOrUpdateFile(filePath, content, `Upload ${file.name} to ${state.selectedUploadPath}`, sha);
+                  // Capture commit SHA from the response
+                  if (result && result.commit && result.commit.sha) {
+                    lastCommitSha = result.commit.sha;
+                  }
                   resolve();
                 } catch (error) {
                   reject(error);
@@ -748,10 +971,61 @@
           }
 
           fileInput.value = '';
-          state.success = `Successfully uploaded ${files.length} file(s) to ${state.selectedUploadPath}`;
 
-          // Reload files in selected path
-          await this.selectUploadPath(state.selectedUploadPath);
+          console.log(`Files uploaded. Commit SHA: ${lastCommitSha}`);
+
+          // Check if workflow monitoring is enabled
+          if (CONFIG.WORKFLOW_FILE && lastCommitSha) {
+            state.success = `Successfully uploaded ${files.length} file(s) to ${state.selectedUploadPath}. Waiting for GitHub Actions to complete...`;
+            state.loading = true;
+            this.render();
+
+            // Wait for workflow to complete (no timeout - waits indefinitely)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const workflowResult = await api.waitForWorkflowCompletion(CONFIG.WORKFLOW_FILE, lastCommitSha);
+
+            if (workflowResult && workflowResult.status === 'completed') {
+              if (workflowResult.conclusion === 'success') {
+                state.success = `Upload complete! GitHub Actions passed. Refreshing file list...`;
+              } else if (workflowResult.conclusion === 'failure') {
+                state.error = `Upload committed, but GitHub Actions failed. Check the workflow: ${workflowResult.url}`;
+                state.loading = false;
+                this.render();
+                // Still refresh the file list even on failure
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                state.loading = true;
+                this.render();
+              } else {
+                state.success = `Upload committed. Workflow status: ${workflowResult.conclusion}. Refreshing...`;
+              }
+            } else {
+              // Timeout or no workflow - just proceed with refresh
+              state.success = `Upload committed. Refreshing file list...`;
+            }
+
+            this.render();
+
+            // Reload files in selected path
+            await this.selectUploadPath(state.selectedUploadPath);
+
+            state.success = `Upload complete! ${files.length} file(s) added to ${state.selectedUploadPath}`;
+            state.loading = false;
+            this.render();
+          } else {
+            // Workflow monitoring disabled, just refresh with a delay
+            state.success = `Successfully uploaded ${files.length} file(s). Refreshing...`;
+            state.loading = false;
+            this.render();
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            state.loading = true;
+            this.render();
+            await this.selectUploadPath(state.selectedUploadPath);
+
+            state.success = `Upload complete! ${files.length} file(s) added`;
+            state.loading = false;
+            this.render();
+          }
         } catch (error) {
           state.error = error.message;
           state.loading = false;
@@ -804,8 +1078,19 @@
           }
 
           fileInput.value = '';
-          state.success = `Successfully uploaded ${files.length} file(s)`;
+          state.success = `Successfully uploaded ${files.length} file(s). Refreshing...`;
+          state.loading = false;
+          this.render();
+
+          // Wait for GitHub to process, then reload
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          state.loading = true;
+          this.render();
           await this.navigateToPath(state.currentPath);
+
+          state.success = `Upload complete! ${files.length} file(s) added`;
+          state.loading = false;
+          this.render();
         } catch (error) {
           state.error = error.message;
           state.loading = false;
@@ -823,10 +1108,61 @@
 
           const api = new GitHubAPI(state.token);
           const file = await api.getFile(path);
-          await api.deleteFile(path, `Delete ${name}`, file.sha);
+          const deleteResult = await api.deleteFile(path, `Delete ${name}`, file.sha);
 
-          state.success = `Successfully deleted ${name}`;
-          await this.navigateToPath(state.currentPath);
+          let commitSha = null;
+          if (deleteResult && deleteResult.commit && deleteResult.commit.sha) {
+            commitSha = deleteResult.commit.sha;
+          }
+
+          console.log(`File deleted. Commit SHA: ${commitSha}`);
+
+          // Wait for workflow if enabled
+          if (CONFIG.WORKFLOW_FILE && commitSha) {
+            state.success = `Successfully deleted ${name}. Waiting for GitHub Actions to complete...`;
+            state.loading = true;
+            this.render();
+            // Wait for workflow to complete (no timeout - waits indefinitely)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const workflowResult = await api.waitForWorkflowCompletion(CONFIG.WORKFLOW_FILE, commitSha);
+
+            if (workflowResult && workflowResult.status === 'completed') {
+              if (workflowResult.conclusion === 'success') {
+                state.success = `Delete complete! GitHub Actions passed. Refreshing file list...`;
+              } else if (workflowResult.conclusion === 'failure') {
+                state.error = `File deleted, but GitHub Actions failed. Check the workflow: ${workflowResult.url}`;
+                state.loading = false;
+                this.render();
+              } else {
+                state.success = `File deleted. Workflow status: ${workflowResult.conclusion}. Refreshing...`;
+              }
+            } else {
+              state.success = `File deleted. Refreshing file list...`;
+            }
+
+            this.render();
+          } else {
+            state.success = `Successfully deleted ${name}. Refreshing...`;
+            state.loading = false;
+            this.render();
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            state.loading = true;
+            this.render();
+          }
+
+          // Reload the file list - check if we're in the upload path view
+          if (state.selectedUploadPath) {
+            await this.selectUploadPath(state.selectedUploadPath);
+            state.success = `Deleted ${name}`;
+          } else {
+            await this.navigateToPath(state.currentPath);
+            state.success = `Deleted ${name}`;
+          }
+
+          state.loading = false;
+          this.render();
         } catch (error) {
           state.error = error.message;
           state.loading = false;
@@ -1012,6 +1348,9 @@
         };
 
         document.getElementById('app').innerHTML = pages[state.currentPage]();
+
+        // Show toast notifications for errors/success messages
+        showNotification();
       }
     };
 
