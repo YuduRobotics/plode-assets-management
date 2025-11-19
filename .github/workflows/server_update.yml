@@ -43,5 +43,5 @@ jobs:
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
             "
               source ~/.nvm/nvm.sh;
-              pm2 restart plode_assets_management;
+              sudo pm2 restart plode_assets_management;
             "
