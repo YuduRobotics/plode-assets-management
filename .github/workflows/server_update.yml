@@ -22,17 +22,11 @@ jobs:
           npm install
           npm run build
 
-      # --------------------------------------------------
-      # Create SSH key file from secret (.pem)
-      # --------------------------------------------------
       - name: Setup SSH Key
         run: |
           echo "${{ secrets.PRIVATE_KEY }}" > server_key.pem
           chmod 600 server_key.pem
 
-      # --------------------------------------------------
-      # Copy dist folder + index.html
-      # --------------------------------------------------
       - name: Upload files to EC2
         run: |
           scp -i server_key.pem -o StrictHostKeyChecking=no \
@@ -40,17 +34,14 @@ jobs:
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.FILE_TARGET }}
 
           scp -i server_key.pem -o StrictHostKeyChecking=no \
-            index.html \
+            index.html firmware-structure.json \
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.FILE_TARGET }}
 
-      # --------------------------------------------------
-      # PM2 restart
-      # --------------------------------------------------
-      # - name: Restart PM2 Service
-      #   run: |
-      #     ssh -i server_key.pem -o StrictHostKeyChecking=no \
-      #       ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
-      #       "
-      #         source ~/.nvm/nvm.sh;
-      #         pm2 restart ${{ secrets.PM2_APP_NAME }};
-      #       "
+      - name: Restart PM2 Service
+        run: |
+          ssh -i server_key.pem -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+            "
+              source ~/.nvm/nvm.sh;
+              pm2 restart plode_assets_management;
+            "
