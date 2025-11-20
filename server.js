@@ -41,7 +41,7 @@ if (ACCESS_CONTROL_TYPE === 'organization' && !GITHUB_ORGANIZATION) {
 }
 
 // Helper function to check if user is a collaborator with write access
-async function isCollaborator(username, token) {
+async function isCollaborator(username) {
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/collaborators/${username}/permission`;
 
   try {
@@ -74,7 +74,7 @@ async function isCollaborator(username, token) {
 }
 
 // Helper function to check if user is an organization member with repo access
-async function isOrganizationMember(username, token) {
+async function isOrganizationMember(username) {
   const memberUrl = `https://api.github.com/orgs/${GITHUB_ORGANIZATION}/members/${username}`;
 
   try {
@@ -119,17 +119,17 @@ async function isOrganizationMember(username, token) {
 }
 
 // Main access control check
-async function hasAccess(username, token) {
+async function hasAccess(username) {
   if (ACCESS_CONTROL_TYPE === 'organization') {
     console.log(`Checking organization membership for ${username} in ${GITHUB_ORGANIZATION}`);
-    return await isOrganizationMember(username, token);
+    return await isOrganizationMember(username);
   } else {
     console.log(`Checking collaborator status for ${username} on ${GITHUB_OWNER}/${GITHUB_REPO}`);
-    return await isCollaborator(username, token);
+    return await isCollaborator(username);
   }
 }
 
-// Helper function to get user info
+// Helper function to get user info with email
 async function getUserInfo(token) {
   const response = await fetch('https://api.github.com/user', {
     headers: {
@@ -142,7 +142,35 @@ async function getUserInfo(token) {
     throw new Error('Failed to get user info');
   }
 
-  return response.json();
+  const user = await response.json();
+
+  // If email is not public, fetch it from /user/emails
+  if (!user.email) {
+    try {
+      const emailsResponse = await fetch('https://api.github.com/user/emails', {
+        headers: {
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github+json"
+        }
+      });
+
+      if (emailsResponse.ok) {
+        const emails = await emailsResponse.json();
+        // Find the primary email
+        const primaryEmail = emails.find(e => e.primary);
+        if (primaryEmail) {
+          user.email = primaryEmail.email;
+        } else if (emails.length > 0) {
+          // Fallback to first email if no primary
+          user.email = emails[0].email;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch user emails:', error);
+    }
+  }
+
+  return user;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -219,7 +247,7 @@ const server = http.createServer(async (req, res) => {
         console.log(`User authenticated: ${user.login}`);
 
         // Check if user has access (collaborator or organization member)
-        const userHasAccess = await hasAccess(user.login, data.access_token);
+        const userHasAccess = await hasAccess(user.login);
 
         if (!userHasAccess) {
           const accessType = ACCESS_CONTROL_TYPE === 'organization' ? 'organization member' : 'collaborator';
@@ -236,7 +264,18 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        console.log(`Access granted for ${ACCESS_CONTROL_TYPE === 'organization' ? 'organization member' : 'collaborator'}: ${user.login}`);
+        // Ensure we have an email for commit attribution
+        if (!user.email) {
+          console.error(`No email found for user: ${user.login}`);
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            error: "Email Required",
+            message: "Unable to retrieve your email address. Please ensure you have a verified email set in your GitHub account and that it's visible to OAuth apps."
+          }));
+          return;
+        }
+
+        console.log(`Access granted for ${ACCESS_CONTROL_TYPE === 'organization' ? 'organization member' : 'collaborator'}: ${user.login} (${user.email})`);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           access_token: data.access_token,

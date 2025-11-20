@@ -139,28 +139,24 @@
       }
 
       async createOrUpdateFile(path, content, message, sha = null) {
-        console.log(this.author);
+        // Ensure we have author info for attribution
+        if (!this.author || !this.author.email) {
+          throw new Error('Author information (name and email) is required for commits. Please re-login.');
+        }
 
         const requestBody = {
           message,
           content: btoa(unescape(encodeURIComponent(content))),
           branch: this.branch,
-          committer: {
+          ...(sha && { sha }),
+          author: {
             name: this.author.name,
             email: this.author.email
           },
-          ...(sha && { sha }),
-          // Set commit author if provided
-          ...(this.author && this.author.name && this.author.email && {
-            author: {
-              name: this.author.name,
-              email: this.author.email
-            },
-            committer: {
-              name: this.author.name,
-              email: this.author.email
-            }
-          })
+          committer: {
+            name: this.author.name,
+            email: this.author.email
+          }
         };
 
         const response = await this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
@@ -172,21 +168,23 @@
       }
 
       async deleteFile(path, message, sha) {
+        // Ensure we have author info for attribution
+        if (!this.author || !this.author.email) {
+          throw new Error('Author information (name and email) is required for commits. Please re-login.');
+        }
+
         const requestBody = {
           message,
           sha,
           branch: this.branch,
-          // Set commit author if provided
-          ...(this.author && this.author.name && this.author.email && {
-            author: {
-              name: this.author.name,
-              email: this.author.email
-            },
-            committer: {
-              name: this.author.name,
-              email: this.author.email
-            }
-          })
+          author: {
+            name: this.author.name,
+            email: this.author.email
+          },
+          committer: {
+            name: this.author.name,
+            email: this.author.email
+          }
         };
 
         const response = await this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
@@ -341,12 +339,13 @@
 
     // Helper to get author info for commits
     function getAuthorInfo() {
-      if (state.user && state.user.name && state.user.email) {
+      if (state.user && state.user.email) {
         return {
           name: state.user.name || state.user.login,
           email: state.user.email
         };
       }
+      console.warn('Author info not available:', state.user);
       return null;
     }
 
