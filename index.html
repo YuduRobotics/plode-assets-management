@@ -139,10 +139,16 @@
       }
 
       async createOrUpdateFile(path, content, message, sha = null) {
+        console.log(this.author);
+
         const requestBody = {
           message,
           content: btoa(unescape(encodeURIComponent(content))),
           branch: this.branch,
+          committer: {
+            name: this.author.name,
+            email: this.author.email
+          },
           ...(sha && { sha }),
           // Set commit author if provided
           ...(this.author && this.author.name && this.author.email && {
