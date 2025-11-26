@@ -84,6 +84,9 @@
     // Firmware folder structure (loaded from JSON file)
     let FIRMWARE_STRUCTURE = {};
 
+    // Version descriptions from meta.yaml in root repo
+    let VERSION_DESCRIPTIONS = {};
+
     // Load firmware structure from JSON file
     async function loadFirmwareStructure() {
       try {
@@ -93,6 +96,52 @@
         console.error('Failed to load firmware structure:', error);
         // Fallback to empty structure
         FIRMWARE_STRUCTURE = {};
+      }
+    }
+
+    // Load version descriptions from root mata.yaml
+    async function loadVersionDescriptions() {
+      try {
+        const api = new GitHubAPI(CONFIG.GITHUB_TOKEN, null);
+        console.log('Fetching mata.yaml from GitHub...');
+        const metaFile = await api.getFile('mata.yaml');
+        console.log('mata.yaml raw content:', metaFile.decodedContent);
+        VERSION_DESCRIPTIONS = parseVersionYAML(metaFile.decodedContent);
+        console.log('Parsed version descriptions:', VERSION_DESCRIPTIONS);
+      } catch (error) {
+        console.error('Failed to load version descriptions from mata.yaml:', error);
+        VERSION_DESCRIPTIONS = {};
+      }
+    }
+
+    // Parse meta.yaml with nested structure for version descriptions
+    function parseVersionYAML(content) {
+      try {
+        const lines = content.split('\n');
+        const result = {};
+        let currentVersion = null;
+
+        lines.forEach(line => {
+          // Match version keys like "ZG2.0:" or "ZG2.1:"
+          const versionMatch = line.match(/^([\w.]+):\s*$/);
+          if (versionMatch) {
+            currentVersion = versionMatch[1];
+            result[currentVersion] = {};
+            return;
+          }
+
+          // Match nested properties like "  discription: 12v moter is using"
+          const propMatch = line.match(/^\s+(\w+):\s*(.+)$/);
+          if (propMatch && currentVersion) {
+            const [, key, value] = propMatch;
+            result[currentVersion][key] = value.trim();
+          }
+        });
+
+        return result;
+      } catch (error) {
+        console.error('Failed to parse version YAML:', error);
+        return {};
       }
     }
 
@@ -570,17 +619,24 @@
               </div>
             ` : `
               <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                ${state.firmware.map(fw => `
-                  <button onclick="app.viewFirmware('${fw.name}')" class="text-left bg-white p-6 rounded-lg shadow hover:shadow-lg transition-shadow">
-                    <h3 class="text-xl font-semibold mb-2">${fw.name}</h3>
-                    ${fw.meta ? `
-                      <div class="text-sm text-gray-600 space-y-1">
-                        <p>Version: ${fw.meta.version || 'N/A'}</p>
-                        <p>Updated: ${fw.meta.last_updated ? new Date(fw.meta.last_updated).toLocaleDateString() : 'N/A'}</p>
-                      </div>
-                    ` : '<p class="text-sm text-gray-500">No metadata</p>'}
-                  </button>
-                `).join('')}
+                ${state.firmware.map(fw => {
+        const version = fw.meta?.version;
+        // Match by firmware name (folder name like "ZG2.0") instead of version number
+        const versionInfo = VERSION_DESCRIPTIONS[fw.name];
+        const description = versionInfo?.discription || versionInfo?.description;
+        return `
+                    <button onclick="app.viewFirmware('${fw.name}')" class="text-left bg-white p-6 rounded-lg shadow hover:shadow-lg transition-shadow">
+                      <h3 class="text-xl font-semibold mb-2">${fw.name}</h3>
+                      ${fw.meta ? `
+                        <div class="text-sm text-gray-600 space-y-1">
+                          <p>Version: ${version || 'N/A'}</p>
+                          <p>Updated: ${fw.meta.last_updated ? new Date(fw.meta.last_updated).toLocaleDateString() : 'N/A'}</p>
+                          ${description ? `<p class="text-gray-700 mt-2 italic">${description}</p>` : ''}
+                        </div>
+                      ` : '<p class="text-sm text-gray-500">No metadata</p>'}
+                    </button>
+                  `;
+      }).join('')}
               </div>
             `}
           </main>
@@ -716,6 +772,11 @@
         // Load firmware structure first
         await loadFirmwareStructure();
 
+        // Load version descriptions from root meta.yaml
+        if (CONFIG.GITHUB_TOKEN) {
+          await loadVersionDescriptions();
+        }
+
         // Load stored user info if available
         const storedUser = localStorage.getItem('github_user');
         if (storedUser) {
@@ -811,6 +872,11 @@
 
           if (!hasAccess) {
             throw new Error('No access to repository. Please check repository name and token permissions.');
+          }
+
+          // Load version descriptions if not already loaded
+          if (Object.keys(VERSION_DESCRIPTIONS).length === 0) {
+            await loadVersionDescriptions();
           }
 
           state.currentPage = 'dashboard';
