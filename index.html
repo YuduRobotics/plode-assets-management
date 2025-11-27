@@ -16,6 +16,30 @@
               300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6',
               600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a'
             }
+          },
+          animation: {
+            'slide-down': 'slideDown 0.3s ease-out',
+            'slide-up': 'slideUp 0.3s ease-out',
+            'fade-in': 'fadeIn 0.3s ease-out',
+            'fade-out': 'fadeOut 0.3s ease-out'
+          },
+          keyframes: {
+            slideDown: {
+              '0%': { transform: 'translateY(-100%)', opacity: '0' },
+              '100%': { transform: 'translateY(0)', opacity: '1' }
+            },
+            slideUp: {
+              '0%': { transform: 'translateY(0)', opacity: '1' },
+              '100%': { transform: 'translateY(-100%)', opacity: '0' }
+            },
+            fadeIn: {
+              '0%': { opacity: '0' },
+              '100%': { opacity: '1' }
+            },
+            fadeOut: {
+              '0%': { opacity: '1' },
+              '100%': { opacity: '0' }
+            }
           }
         }
       }
@@ -24,23 +48,108 @@
 </head>
 
 <body class="bg-gray-50">
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed top-0 left-0 right-0 z-50 flex justify-center p-4 pointer-events-none">
+    <div id="toast" class="hidden pointer-events-auto"></div>
+  </div>
+
   <div id="app"></div>
 
   <script type="module">
+    // Configuration - Update these values for your setup
     const CONFIG = {
       GITHUB_TOKEN: localStorage.getItem('github_token') || '',
-      GITHUB_OWNER: 'Jovit-Mathew236',
+
+      // Repository Configuration
+      // For personal repo: set GITHUB_OWNER to your username
+      // For organization repo: set GITHUB_OWNER to organization name
+      GITHUB_OWNER: 'YuduRobotics',
       GITHUB_REPO: 'plode-release-management',
       GITHUB_BRANCH: 'main',
-      GITHUB_CLIENT_ID: 'Ov23liJJOak8gXXpOxCY',
-      // OAuth backend server URL
-      OAUTH_CALLBACK_URL: 'http://localhost:3000/api/auth'
+
+      // GitHub App Client ID
+      GITHUB_APP_CLIENT_ID: 'Ov23liQmM1NzoZCUr8t5',
+
+      // App URLs
+      APP_HOMEPAGE_URL: 'https://pipeline.plode.org/plode-assets-backend/',
+      APP_CALLBACK_URL: 'https://pipeline.plode.org/plode-assets-backend/',
+
+      // GitHub Actions workflow file name (optional)
+      // Set this to your workflow file name if you want to check Actions status after upload
+      // Leave empty ('') to disable workflow status checking and use simple refresh instead
+      // Note: Your workflow takes time to complete, so simple refresh might be better
+      WORKFLOW_FILE: 'update-meta-and-release.yml'  // Disabled - using simple refresh with delay
     };
+
+    // Firmware folder structure (loaded from JSON file)
+    let FIRMWARE_STRUCTURE = {};
+
+    // Version descriptions from meta.yaml in root repo
+    let VERSION_DESCRIPTIONS = {};
+
+    // Load firmware structure from JSON file
+    async function loadFirmwareStructure() {
+      try {
+        const response = await fetch('./firmware-structure.json');
+        FIRMWARE_STRUCTURE = await response.json();
+      } catch (error) {
+        console.error('Failed to load firmware structure:', error);
+        // Fallback to empty structure
+        FIRMWARE_STRUCTURE = {};
+      }
+    }
+
+    // Load version descriptions from root mata.yaml
+    async function loadVersionDescriptions() {
+      try {
+        const api = new GitHubAPI(CONFIG.GITHUB_TOKEN, null);
+        console.log('Fetching mata.yaml from GitHub...');
+        const metaFile = await api.getFile('mata.yaml');
+        console.log('mata.yaml raw content:', metaFile.decodedContent);
+        VERSION_DESCRIPTIONS = parseVersionYAML(metaFile.decodedContent);
+        console.log('Parsed version descriptions:', VERSION_DESCRIPTIONS);
+      } catch (error) {
+        console.error('Failed to load version descriptions from mata.yaml:', error);
+        VERSION_DESCRIPTIONS = {};
+      }
+    }
+
+    // Parse meta.yaml with nested structure for version descriptions
+    function parseVersionYAML(content) {
+      try {
+        const lines = content.split('\n');
+        const result = {};
+        let currentVersion = null;
+
+        lines.forEach(line => {
+          // Match version keys like "ZG2.0:" or "ZG2.1:"
+          const versionMatch = line.match(/^([\w.]+):\s*$/);
+          if (versionMatch) {
+            currentVersion = versionMatch[1];
+            result[currentVersion] = {};
+            return;
+          }
+
+          // Match nested properties like "  discription: 12v moter is using"
+          const propMatch = line.match(/^\s+(\w+):\s*(.+)$/);
+          if (propMatch && currentVersion) {
+            const [, key, value] = propMatch;
+            result[currentVersion][key] = value.trim();
+          }
+        });
+
+        return result;
+      } catch (error) {
+        console.error('Failed to parse version YAML:', error);
+        return {};
+      }
+    }
 
     // GitHub API Client
     class GitHubAPI {
-      constructor(token) {
+      constructor(token, author = null) {
         this.token = token;
+        this.author = author; // { name, email } for commit attribution
         this.baseURL = 'https://api.github.com';
         this.owner = CONFIG.GITHUB_OWNER;
         this.repo = CONFIG.GITHUB_REPO;
@@ -79,22 +188,60 @@
       }
 
       async createOrUpdateFile(path, content, message, sha = null) {
-        return this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
+        // Ensure we have author info for attribution
+        if (!this.author || !this.author.email) {
+          throw new Error('Author information (name and email) is required for commits. Please re-login.');
+        }
+
+        const requestBody = {
+          message,
+          content: btoa(unescape(encodeURIComponent(content))),
+          branch: this.branch,
+          ...(sha && { sha }),
+          author: {
+            name: this.author.name,
+            email: this.author.email
+          },
+          committer: {
+            name: this.author.name,
+            email: this.author.email
+          }
+        };
+
+        const response = await this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
           method: 'PUT',
-          body: JSON.stringify({
-            message,
-            content: btoa(unescape(encodeURIComponent(content))),
-            branch: this.branch,
-            ...(sha && { sha })
-          })
+          body: JSON.stringify(requestBody)
         });
+        // Return the full response including commit SHA
+        return response;
       }
 
       async deleteFile(path, message, sha) {
-        return this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
+        // Ensure we have author info for attribution
+        if (!this.author || !this.author.email) {
+          throw new Error('Author information (name and email) is required for commits. Please re-login.');
+        }
+
+        const requestBody = {
+          message,
+          sha,
+          branch: this.branch,
+          author: {
+            name: this.author.name,
+            email: this.author.email
+          },
+          committer: {
+            name: this.author.name,
+            email: this.author.email
+          }
+        };
+
+        const response = await this.request(`/repos/${this.owner}/${this.repo}/contents/${path}`, {
           method: 'DELETE',
-          body: JSON.stringify({ message, sha, branch: this.branch })
+          body: JSON.stringify(requestBody)
         });
+        // Return the full response including commit SHA
+        return response;
       }
 
       async deleteDirectory(path, message) {
@@ -126,34 +273,103 @@
           return false;
         }
       }
+
+      async getWorkflowRunByCommitSha(workflowFileName, commitSha) {
+        try {
+          // Get workflow runs, newest first
+          const data = await this.request(`/repos/${this.owner}/${this.repo}/actions/workflows/${workflowFileName}/runs?per_page=1`);
+          if (data.workflow_runs && data.workflow_runs.length > 0) {
+            // Find the workflow run that matches our commit SHA
+            const matchingRun = data.workflow_runs.find(run => run.head_sha === commitSha);
+            if (matchingRun) {
+              return matchingRun;
+            }
+          }
+          return null;
+        } catch (error) {
+          console.error('Error getting workflow runs:', error);
+          return null;
+        }
+      }
+
+      async waitForWorkflowCompletion(workflowFileName, commitSha, maxWaitTime = null) {
+        const pollInterval = 10000; // Check every 5 seconds
+        const startTime = Date.now();
+        let iteration = 0;
+
+        console.log(`Waiting for workflow run for commit: ${commitSha ? commitSha.substring(0, 7) : 'unknown'}`);
+
+        while (true) {
+          const run = await this.getWorkflowRunByCommitSha(workflowFileName, commitSha);
+
+          if (!run) {
+            // No workflow found, wait a bit and try again (might not have started yet)
+            if (iteration > 10) {
+              // After 50 seconds, give up looking for workflow
+              console.log('Workflow not found after 50 seconds, giving up');
+              return null;
+            }
+            console.log(`No workflow run found yet for commit ${commitSha.substring(0, 7)} (attempt ${iteration + 1}/10)`);
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+            iteration++;
+            continue;
+          }
+
+          console.log(`Workflow status: ${run.status}, conclusion: ${run.conclusion || 'null'}`);
+
+          if (run.status === 'completed') {
+            // Workflow completed, return the conclusion
+            console.log(`Workflow completed with conclusion: ${run.conclusion}`);
+            return {
+              status: run.status,
+              conclusion: run.conclusion, // success, failure, cancelled, etc.
+              url: run.html_url
+            };
+          }
+
+          // Check timeout only if maxWaitTime is set
+          if (maxWaitTime && (Date.now() - startTime) >= maxWaitTime) {
+            return { status: 'timeout', conclusion: null, url: run.html_url };
+          }
+
+          // Still running (queued, in_progress, etc.), wait before checking again
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          iteration++;
+        }
+      }
     }
 
-    // OAuth Helper
+    // GitHub App Authentication Helper
     async function exchangeCodeForToken(code) {
-      const response = await fetch(CONFIG.OAUTH_CALLBACK_URL, {
+      const authEndpoint = `${CONFIG.APP_CALLBACK_URL}api/auth`;
+      const response = await fetch(authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code })
       });
 
       if (!response.ok) {
-        throw new Error('Failed to exchange code for token');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || 'Failed to exchange code for token');
       }
 
       const data = await response.json();
-      return data.access_token;
+      return data;
     }
 
     // State Management
     const state = {
       user: null,
-      token: CONFIG.GITHUB_TOKEN,
+      token: CONFIG.GITHUB_TOKEN, // Admin PAT for repo operations
+      userToken: null, // User OAuth token (not used for repo ops)
       currentPage: 'login',
       firmware: [],
       selectedFirmware: null,
       currentPath: '',
       currentFiles: [],
       breadcrumbs: [],
+      selectedUploadPath: '',
+      uploadPathFiles: [],
       loading: false,
       error: null,
       success: null
@@ -168,6 +384,123 @@
 
     function formatDate(dateString) {
       return new Date(dateString).toLocaleString();
+    }
+
+    // Helper to get author info for commits
+    function getAuthorInfo() {
+      if (state.user && state.user.email) {
+        return {
+          name: state.user.name || state.user.login,
+          email: state.user.email
+        };
+      }
+      console.warn('Author info not available:', state.user);
+      return null;
+    }
+
+    // Toast Notification System
+    let toastTimeout = null;
+
+    function showToast(message, type = 'info', duration = 5000) {
+      const toast = document.getElementById('toast');
+
+      // Clear any existing timeout
+      if (toastTimeout) {
+        clearTimeout(toastTimeout);
+      }
+
+      // Remove existing classes
+      toast.className = 'hidden pointer-events-auto';
+
+      // Define toast styles based on type
+      const styles = {
+        error: 'bg-red-600 text-white',
+        success: 'bg-green-600 text-white',
+        info: 'bg-blue-600 text-white',
+        warning: 'bg-yellow-500 text-white',
+        loading: 'bg-gray-800 text-white'
+      };
+
+      // Set toast content and style
+      toast.innerHTML = `
+        <div class="flex items-center gap-3 px-6 py-4 rounded-lg shadow-lg max-w-2xl ${styles[type]} animate-slide-down">
+          ${type === 'loading' ? `
+            <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          ` : type === 'success' ? `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+          ` : type === 'error' ? `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          ` : type === 'warning' ? `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+          ` : `
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+          `}
+          <span class="font-medium">${message}</span>
+          ${type !== 'loading' ? `
+            <button onclick="hideToast()" class="ml-auto hover:opacity-75">
+              <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+          ` : ''}
+        </div>
+      `;
+
+      // Show toast
+      toast.classList.remove('hidden');
+
+      // Auto-hide after duration (unless it's a loading toast)
+      if (type !== 'loading' && duration > 0) {
+        toastTimeout = setTimeout(() => {
+          hideToast();
+        }, duration);
+      }
+    }
+
+    function hideToast() {
+      const toast = document.getElementById('toast');
+      const toastContent = toast.querySelector('div');
+
+      if (toastContent) {
+        toastContent.classList.remove('animate-slide-down');
+        toastContent.classList.add('animate-slide-up');
+
+        setTimeout(() => {
+          toast.classList.add('hidden');
+        }, 300);
+      }
+
+      if (toastTimeout) {
+        clearTimeout(toastTimeout);
+        toastTimeout = null;
+      }
+    }
+
+    // Make hideToast globally available
+    window.hideToast = hideToast;
+
+    // Helper function to show notifications based on state
+    function showNotification() {
+      if (state.error) {
+        showToast(state.error, 'error', 7000);
+      } else if (state.success) {
+        if (state.loading) {
+          showToast(state.success, 'loading', 0); // Don't auto-hide loading toasts
+        } else {
+          showToast(state.success, 'success', 5000);
+        }
+      }
     }
 
     // Components
@@ -286,17 +619,24 @@
               </div>
             ` : `
               <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                ${state.firmware.map(fw => `
-                  <button onclick="app.viewFirmware('${fw.name}')" class="text-left bg-white p-6 rounded-lg shadow hover:shadow-lg transition-shadow">
-                    <h3 class="text-xl font-semibold mb-2">${fw.name}</h3>
-                    ${fw.meta ? `
-                      <div class="text-sm text-gray-600 space-y-1">
-                        <p>Version: ${fw.meta.version || 'N/A'}</p>
-                        <p>Updated: ${fw.meta.last_updated ? new Date(fw.meta.last_updated).toLocaleDateString() : 'N/A'}</p>
-                      </div>
-                    ` : '<p class="text-sm text-gray-500">No metadata</p>'}
-                  </button>
-                `).join('')}
+                ${state.firmware.map(fw => {
+        const version = fw.meta?.version;
+        // Match by firmware name (folder name like "ZG2.0") instead of version number
+        const versionInfo = VERSION_DESCRIPTIONS[fw.name];
+        const description = versionInfo?.discription || versionInfo?.description;
+        return `
+                    <button onclick="app.viewFirmware('${fw.name}')" class="text-left bg-white p-6 rounded-lg shadow hover:shadow-lg transition-shadow">
+                      <h3 class="text-xl font-semibold mb-2">${fw.name}</h3>
+                      ${fw.meta ? `
+                        <div class="text-sm text-gray-600 space-y-1">
+                          <p>Version: ${version || 'N/A'}</p>
+                          <p>Updated: ${fw.meta.last_updated ? new Date(fw.meta.last_updated).toLocaleDateString() : 'N/A'}</p>
+                          ${description ? `<p class="text-gray-700 mt-2 italic">${description}</p>` : ''}
+                        </div>
+                      ` : '<p class="text-sm text-gray-500">No metadata</p>'}
+                    </button>
+                  `;
+      }).join('')}
               </div>
             `}
           </main>
@@ -348,76 +688,78 @@
             ` : ''}
 
             <div class="bg-white p-6 rounded-lg mb-6">
-              <h3 class="text-xl font-semibold mb-4">Upload Files</h3>
-              <div class="flex gap-4 items-end">
-                <input
-                  type="file"
-                  id="fileInput"
-                  multiple
-                  class="block flex-1 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
-                />
-                <button onclick="app.uploadFiles()" class="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 whitespace-nowrap">
-                  Upload
-                </button>
+              <h3 class="text-xl font-semibold mb-4">File Management</h3>
+
+              <!-- Path Selector -->
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Select Upload Path</label>
+                <select
+                  id="pathSelector"
+                  onchange="app.selectUploadPath(this.value)"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="">-- Choose a path --</option>
+                  ${Object.entries(FIRMWARE_STRUCTURE[fw.name] || {}).map(([path, label]) => `
+                    <option value="${path}" ${state.selectedUploadPath === path ? 'selected' : ''}>${label} (${path})</option>
+                  `).join('')}
+                </select>
               </div>
+
+              ${state.selectedUploadPath ? `
+                <!-- File Upload -->
+                <div class="mb-4 p-4 bg-gray-50 rounded">
+                  <p class="text-sm text-gray-600 mb-2">Selected path: <strong>${state.selectedUploadPath}</strong></p>
+                  <div class="flex gap-4 items-end">
+                    <input
+                      type="file"
+                      id="fileInput"
+                      multiple
+                      class="block flex-1 text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+                    />
+                    <button onclick="app.uploadFilesToPath()" class="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 whitespace-nowrap">
+                      Upload
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Files in Selected Path -->
+                <div class="border-t pt-4">
+                  <h4 class="font-semibold mb-2">Files in this path:</h4>
+                  ${state.loading ? Loading() : ''}
+                  <div class="divide-y">
+                    ${state.uploadPathFiles.length === 0 && !state.loading ? `
+                      <p class="py-4 text-center text-gray-500 text-sm">No files in this path</p>
+                    ` : state.uploadPathFiles.map(file => `
+                      <div class="py-3 flex justify-between items-center hover:bg-gray-50 px-2 rounded">
+                        <div class="flex items-center gap-3 flex-1">
+                          <svg class="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"></path>
+                          </svg>
+                          <button
+                            onclick="app.viewFile('${file.path}')"
+                            class="font-medium text-primary-600 hover:text-primary-700 text-sm text-left"
+                          >
+                            ${file.name}
+                          </button>
+                          <span class="text-xs text-gray-500">${formatFileSize(file.size)}</span>
+                        </div>
+                        ${file.name !== 'meta.yaml' ? `
+                          <button
+                            onclick="app.deleteFile('${file.path}', '${file.name}')"
+                            class="text-red-600 hover:text-red-800 text-sm"
+                          >
+                            Delete
+                          </button>
+                        ` : ''}
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
             </div>
 
-            ${state.loading ? Loading() : ''}
             ${state.error ? Alert(state.error, 'error') : ''}
             ${state.success ? Alert(state.success, 'success') : ''}
-
-            <div class="bg-white rounded-lg shadow">
-              <div class="px-6 py-4 border-b">
-                <h3 class="text-xl font-semibold">Files</h3>
-              </div>
-              <div class="divide-y">
-                ${state.currentFiles.length === 0 ? `
-                  <p class="px-6 py-8 text-center text-gray-500">No files in this directory</p>
-                ` : state.currentFiles.map(file => `
-                  <div class="px-6 py-4 flex justify-between items-center hover:bg-gray-50">
-                    <div class="flex items-center gap-3 flex-1">
-                      ${file.type === 'dir' ? `
-                        <svg class="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"></path>
-                        </svg>
-                      ` : `
-                        <svg class="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
-                          <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"></path>
-                        </svg>
-                      `}
-                      <div class="flex-1">
-                        <button
-                          onclick="app.${file.type === 'dir' ? `navigateIntoDir('${file.path}')` : `viewFile('${file.path}')`}"
-                          class="font-medium text-primary-600 hover:text-primary-700 text-left"
-                        >
-                          ${file.name}
-                        </button>
-                        ${file.type === 'file' ? `<p class="text-sm text-gray-500">${formatFileSize(file.size)}</p>` : ''}
-                      </div>
-                    </div>
-                    ${file.type === 'file' && file.name !== 'meta.yaml' ? `
-                      <button
-                        onclick="app.deleteFile('${file.path}', '${file.name}')"
-                        class="text-red-600 hover:text-red-800 text-sm ml-4"
-                      >
-                        Delete
-                      </button>
-                    ` : file.type === 'dir' ? `
-                      <button
-                        onclick="app.deleteDirectory('${file.path}', '${file.name}')"
-                        class="text-red-600 hover:text-red-800 text-sm ml-4 inline-flex items-center gap-1"
-                        title="Delete entire directory"
-                      >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                        </svg>
-                        Delete
-                      </button>
-                    ` : ''}
-                  </div>
-                `).join('')}
-              </div>
-            </div>
           </main>
         </div>
         <div id="modal"></div>
@@ -427,6 +769,24 @@
     // Application Logic
     const app = {
       async init() {
+        // Load firmware structure first
+        await loadFirmwareStructure();
+
+        // Load version descriptions from root meta.yaml
+        if (CONFIG.GITHUB_TOKEN) {
+          await loadVersionDescriptions();
+        }
+
+        // Load stored user info if available
+        const storedUser = localStorage.getItem('github_user');
+        if (storedUser) {
+          try {
+            state.user = JSON.parse(storedUser);
+          } catch (e) {
+            console.error('Failed to parse stored user info');
+          }
+        }
+
         // Check for OAuth callback
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
@@ -444,9 +804,11 @@
       },
 
       loginWithGitHub() {
-        const redirectUri = window.location.origin + window.location.pathname;
-        const scope = 'repo';
-        window.location.href = `https://github.com/login/oauth/authorize?client_id=${CONFIG.GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=${scope}`;
+        // GitHub App web application flow
+        const redirectUri = CONFIG.APP_HOMEPAGE_URL;
+        const scope = 'read:user%20user:email'
+        window.location.href =
+          `https://github.com/login/oauth/authorize?client_id=${CONFIG.GITHUB_APP_CLIENT_ID}&redirect_uri=${redirectUri}&scope=${scope}`;
       },
 
       async handleOAuthCallback(code) {
@@ -457,15 +819,25 @@
           // Clean URL
           window.history.replaceState({}, document.title, window.location.pathname);
 
-          // Exchange code for token
-          const token = await exchangeCodeForToken(code);
-          state.token = token;
-          localStorage.setItem('github_token', token);
-          CONFIG.GITHUB_TOKEN = token;
+          // Exchange code for tokens and user info
+          const authData = await exchangeCodeForToken(code);
+
+          // Store user OAuth token (for identity only)
+          state.userToken = authData.access_token;
+
+          // Store admin PAT (for repo operations)
+          state.token = authData.admin_token;
+          localStorage.setItem('github_token', authData.admin_token);
+          CONFIG.GITHUB_TOKEN = authData.admin_token;
+
+          // Store user info with email
+          state.user = authData.user;
+          localStorage.setItem('github_user', JSON.stringify(authData.user));
 
           await this.checkAuth();
         } catch (error) {
-          state.error = error.message;
+          state.error = "Permission Error";
+          console.log(error.message);
           state.loading = false;
           state.currentPage = 'login';
           this.render();
@@ -492,12 +864,20 @@
           state.loading = true;
           this.render();
 
-          const api = new GitHubAPI(state.token);
-          state.user = await api.getUser();
+          const api = new GitHubAPI(state.token, getAuthorInfo());
+          // Only fetch user info if we don't already have it (from OAuth)
+          if (!state.user) {
+            state.user = await api.getUser();
+          }
           const hasAccess = await api.checkRepoAccess();
 
           if (!hasAccess) {
             throw new Error('No access to repository. Please check repository name and token permissions.');
+          }
+
+          // Load version descriptions if not already loaded
+          if (Object.keys(VERSION_DESCRIPTIONS).length === 0) {
+            await loadVersionDescriptions();
           }
 
           state.currentPage = 'dashboard';
@@ -515,11 +895,13 @@
 
       logout() {
         state.token = '';
+        state.userToken = null;
         state.user = null;
         state.currentPage = 'login';
         state.firmware = [];
         state.selectedFirmware = null;
         localStorage.removeItem('github_token');
+        localStorage.removeItem('github_user');
         this.render();
       },
 
@@ -528,7 +910,7 @@
           state.loading = true;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           const contents = await api.listContents();
 
           const folders = contents.filter(item =>
@@ -564,7 +946,7 @@
           state.success = null;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
 
           let meta = null;
           try {
@@ -580,6 +962,8 @@
           state.currentPath = name;
           state.currentFiles = files;
           state.breadcrumbs = [{ name: name, path: name }];
+          state.selectedUploadPath = '';
+          state.uploadPathFiles = [];
           state.currentPage = 'firmware';
         } catch (error) {
           state.error = error.message;
@@ -595,7 +979,7 @@
           state.error = null;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           const files = await api.listContents(path);
 
           state.currentPath = path;
@@ -629,9 +1013,165 @@
         state.currentPath = '';
         state.currentFiles = [];
         state.breadcrumbs = [];
+        state.selectedUploadPath = '';
+        state.uploadPathFiles = [];
         state.error = null;
         state.success = null;
         this.render();
+      },
+
+      async selectUploadPath(path) {
+        state.selectedUploadPath = path;
+        state.uploadPathFiles = [];
+        state.error = null;
+        state.success = null;
+
+        if (!path) {
+          this.render();
+          return;
+        }
+
+        try {
+          state.loading = true;
+          this.render();
+
+          const api = new GitHubAPI(state.token, getAuthorInfo());
+          const firmwareName = state.selectedFirmware.name;
+          const fullPath = `${firmwareName}/${path}`;
+
+          try {
+            const files = await api.listContents(fullPath);
+            state.uploadPathFiles = files.filter(f => f.type === 'file');
+          } catch (error) {
+            // Path doesn't exist yet, that's okay
+            state.uploadPathFiles = [];
+          }
+        } catch (error) {
+          state.error = error.message;
+        } finally {
+          state.loading = false;
+          this.render();
+        }
+      },
+
+      async uploadFilesToPath() {
+        const fileInput = document.getElementById('fileInput');
+        const files = fileInput?.files;
+
+        if (!files || files.length === 0) {
+          state.error = 'Please select files to upload';
+          this.render();
+          return;
+        }
+
+        if (!state.selectedUploadPath) {
+          state.error = 'Please select a path first';
+          this.render();
+          return;
+        }
+
+        try {
+          state.loading = true;
+          state.error = null;
+          state.success = null;
+          this.render();
+
+          const api = new GitHubAPI(state.token, getAuthorInfo());
+          const firmwareName = state.selectedFirmware.name;
+          const uploadPath = `${firmwareName}/${state.selectedUploadPath}`;
+
+          let lastCommitSha = null;
+
+          for (const file of files) {
+            const reader = new FileReader();
+            await new Promise((resolve, reject) => {
+              reader.onload = async (e) => {
+                try {
+                  const content = e.target.result;
+                  const filePath = `${uploadPath}/${file.name}`;
+
+                  let sha = null;
+                  try {
+                    const existing = await api.getFile(filePath);
+                    sha = existing.sha;
+                  } catch { }
+
+                  const result = await api.createOrUpdateFile(filePath, content, `Upload ${file.name} to ${state.selectedUploadPath}`, sha);
+                  // Capture commit SHA from the response
+                  if (result && result.commit && result.commit.sha) {
+                    lastCommitSha = result.commit.sha;
+                  }
+                  resolve();
+                } catch (error) {
+                  reject(error);
+                }
+              };
+              reader.onerror = reject;
+              reader.readAsText(file);
+            });
+          }
+
+          fileInput.value = '';
+
+          console.log(`Files uploaded. Commit SHA: ${lastCommitSha}`);
+
+          // Check if workflow monitoring is enabled
+          if (CONFIG.WORKFLOW_FILE && lastCommitSha) {
+            state.success = `Successfully uploaded ${files.length} file(s) to ${state.selectedUploadPath}. Waiting for GitHub Actions to complete...`;
+            state.loading = true;
+            this.render();
+
+            // Wait for workflow to complete (no timeout - waits indefinitely)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const workflowResult = await api.waitForWorkflowCompletion(CONFIG.WORKFLOW_FILE, lastCommitSha);
+
+            if (workflowResult && workflowResult.status === 'completed') {
+              if (workflowResult.conclusion === 'success') {
+                state.success = `Upload complete! GitHub Actions passed. Refreshing file list...`;
+              } else if (workflowResult.conclusion === 'failure') {
+                state.error = `Upload committed, but GitHub Actions failed. Check the workflow: ${workflowResult.url}`;
+                state.loading = false;
+                this.render();
+                // Still refresh the file list even on failure
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                state.loading = true;
+                this.render();
+              } else {
+                state.success = `Upload committed. Workflow status: ${workflowResult.conclusion}. Refreshing...`;
+              }
+            } else {
+              // Timeout or no workflow - just proceed with refresh
+              state.success = `Upload committed. Refreshing file list...`;
+            }
+
+            this.render();
+
+            // Reload files in selected path
+            await this.selectUploadPath(state.selectedUploadPath);
+
+            state.success = `Upload complete! ${files.length} file(s) added to ${state.selectedUploadPath}`;
+            state.loading = false;
+            this.render();
+          } else {
+            // Workflow monitoring disabled, just refresh with a delay
+            state.success = `Successfully uploaded ${files.length} file(s). Refreshing...`;
+            state.loading = false;
+            this.render();
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            state.loading = true;
+            this.render();
+            await this.selectUploadPath(state.selectedUploadPath);
+
+            state.success = `Upload complete! ${files.length} file(s) added`;
+            state.loading = false;
+            this.render();
+          }
+        } catch (error) {
+          state.error = error.message;
+          state.loading = false;
+          this.render();
+        }
       },
 
       async uploadFiles() {
@@ -650,7 +1190,7 @@
           state.success = null;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           const uploadPath = state.currentPath;
 
           for (const file of files) {
@@ -679,8 +1219,19 @@
           }
 
           fileInput.value = '';
-          state.success = `Successfully uploaded ${files.length} file(s)`;
+          state.success = `Successfully uploaded ${files.length} file(s). Refreshing...`;
+          state.loading = false;
+          this.render();
+
+          // Wait for GitHub to process, then reload
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          state.loading = true;
+          this.render();
           await this.navigateToPath(state.currentPath);
+
+          state.success = `Upload complete! ${files.length} file(s) added`;
+          state.loading = false;
+          this.render();
         } catch (error) {
           state.error = error.message;
           state.loading = false;
@@ -696,12 +1247,63 @@
           state.error = null;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           const file = await api.getFile(path);
-          await api.deleteFile(path, `Delete ${name}`, file.sha);
+          const deleteResult = await api.deleteFile(path, `Delete ${name}`, file.sha);
 
-          state.success = `Successfully deleted ${name}`;
-          await this.navigateToPath(state.currentPath);
+          let commitSha = null;
+          if (deleteResult && deleteResult.commit && deleteResult.commit.sha) {
+            commitSha = deleteResult.commit.sha;
+          }
+
+          console.log(`File deleted. Commit SHA: ${commitSha}`);
+
+          // Wait for workflow if enabled
+          if (CONFIG.WORKFLOW_FILE && commitSha) {
+            state.success = `Successfully deleted ${name}. Waiting for GitHub Actions to complete...`;
+            state.loading = true;
+            this.render();
+            // Wait for workflow to complete (no timeout - waits indefinitely)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const workflowResult = await api.waitForWorkflowCompletion(CONFIG.WORKFLOW_FILE, commitSha);
+
+            if (workflowResult && workflowResult.status === 'completed') {
+              if (workflowResult.conclusion === 'success') {
+                state.success = `Delete complete! GitHub Actions passed. Refreshing file list...`;
+              } else if (workflowResult.conclusion === 'failure') {
+                state.error = `File deleted, but GitHub Actions failed. Check the workflow: ${workflowResult.url}`;
+                state.loading = false;
+                this.render();
+              } else {
+                state.success = `File deleted. Workflow status: ${workflowResult.conclusion}. Refreshing...`;
+              }
+            } else {
+              state.success = `File deleted. Refreshing file list...`;
+            }
+
+            this.render();
+          } else {
+            state.success = `Successfully deleted ${name}. Refreshing...`;
+            state.loading = false;
+            this.render();
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            state.loading = true;
+            this.render();
+          }
+
+          // Reload the file list - check if we're in the upload path view
+          if (state.selectedUploadPath) {
+            await this.selectUploadPath(state.selectedUploadPath);
+            state.success = `Deleted ${name}`;
+          } else {
+            await this.navigateToPath(state.currentPath);
+            state.success = `Deleted ${name}`;
+          }
+
+          state.loading = false;
+          this.render();
         } catch (error) {
           state.error = error.message;
           state.loading = false;
@@ -728,7 +1330,7 @@
           state.success = null;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           await api.deleteDirectory(firmwareName, `Delete firmware: ${firmwareName}`);
 
           state.success = `Successfully deleted firmware: ${firmwareName}`;
@@ -752,7 +1354,7 @@
           state.error = null;
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           await api.deleteDirectory(dirPath, `Delete directory: ${dirName}`);
 
           state.success = `Successfully deleted directory: ${dirName}`;
@@ -769,7 +1371,7 @@
         state.loading = true;
         this.render();
 
-        const api = new GitHubAPI(state.token);
+        const api = new GitHubAPI(state.token, getAuthorInfo());
         api.getFile(path).then(file => {
           state.loading = false;
           const fileName = path.split('/').pop();
@@ -843,7 +1445,7 @@
           document.getElementById('modal').innerHTML = '';
           this.render();
 
-          const api = new GitHubAPI(state.token);
+          const api = new GitHubAPI(state.token, getAuthorInfo());
           const readme = `# ${name}\n\nFirmware description`;
           await api.createOrUpdateFile(`${name}/README.md`, readme, `Create ${name} firmware`);
 
@@ -887,6 +1489,9 @@
         };
 
         document.getElementById('app').innerHTML = pages[state.currentPage]();
+
+        // Show toast notifications for errors/success messages
+        showNotification();
       }
     };
 

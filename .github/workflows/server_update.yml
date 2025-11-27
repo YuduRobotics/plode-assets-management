@@ -1,0 +1,40 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Build project
+        run: |
+          npm install
+          npm run build
+
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.PRIVATE_KEY }}" > server_key.pem
+          chmod 600 server_key.pem
+
+      - name: Upload files to EC2
+        run: |
+          scp -i server_key.pem -o StrictHostKeyChecking=no \
+            -r dist/* index.html firmware-structure.json \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.FILE_TARGET }}
+
+      - name: Restart PM2 Service
+        run: |
+          ssh -i server_key.pem -o StrictHostKeyChecking=no \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+            sudo pm2 restart plode_assets_management;
