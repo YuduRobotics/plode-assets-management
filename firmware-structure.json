@@ -7,6 +7,14 @@
     "actions/random": "Random Actions",
     "actions/auto": "Auto/Micro Actions"
   },
+  "ZG2.1": {
+    "actions/zing": "Internal Actions",
+    "actions/user": "User Actions",
+    "programs": "Program Files",
+    "audio/zing": "Audio Files",
+    "actions/random": "Random Actions",
+    "actions/auto": "Auto/Micro Actions"
+  },
   "ZG3.0": {
     "actions/zing": "Internal Actions",
     "actions/user": "User Actions",
