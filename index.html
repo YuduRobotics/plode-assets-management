@@ -169,7 +169,8 @@
       }
 
       async listContents(path = '') {
-        return this.request(`/repos/${this.owner}/${this.repo}/contents/${path}?ref=${this.branch}`);
+        const cacheBuster = `&t=${Date.now()}`;
+        return this.request(`/repos/${this.owner}/${this.repo}/contents/${path}?ref=${this.branch}${cacheBuster}`);
       }
 
       async getFile(path) {
@@ -183,7 +184,7 @@
         return data;
       }
 
-      async createOrUpdateFile(path, content, message, sha = null) {
+      async createOrUpdateFile(path, content, message, sha = null, isBase64 = false) {
         // Ensure we have author info for attribution
         if (!this.author || !this.author.email) {
           throw new Error('Author information (name and email) is required for commits. Please re-login.');
@@ -191,7 +192,7 @@
 
         const requestBody = {
           message,
-          content: btoa(unescape(encodeURIComponent(content))),
+          content: isBase64 ? content : btoa(unescape(encodeURIComponent(content))),
           branch: this.branch,
           ...(sha && { sha }),
           author: {
@@ -272,8 +273,8 @@
 
       async getWorkflowRunByCommitSha(workflowFileName, commitSha) {
         try {
-          // Get workflow runs, newest first
-          const data = await this.request(`/repos/${this.owner}/${this.repo}/actions/workflows/${workflowFileName}/runs?per_page=1`);
+          // Get workflow runs, newest first - fetching more to find matching SHA
+          const data = await this.request(`/repos/${this.owner}/${this.repo}/actions/workflows/${workflowFileName}/runs?per_page=10`);
           if (data.workflow_runs && data.workflow_runs.length > 0) {
             // Find the workflow run that matches our commit SHA
             const matchingRun = data.workflow_runs.find(run => run.head_sha === commitSha);
@@ -289,11 +290,13 @@
       }
 
       async waitForWorkflowCompletion(workflowFileName, commitSha, maxWaitTime = null) {
-        const pollInterval = 10000; // Check every 5 seconds
+        const pollInterval = 3000; // Check every 3 seconds for better responsiveness
         const startTime = Date.now();
         let iteration = 0;
 
         console.log(`Waiting for workflow run for commit: ${commitSha ? commitSha.substring(0, 7) : 'unknown'}`);
+
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         while (true) {
           const run = await this.getWorkflowRunByCommitSha(workflowFileName, commitSha);
@@ -380,6 +383,17 @@
 
     function formatDate(dateString) {
       return new Date(dateString).toLocaleString();
+    }
+
+    // Convert ArrayBuffer to Base64 (handles binary data correctly)
+    function arrayBufferToBase64(buffer) {
+      let binary = '';
+      const bytes = new Uint8Array(buffer);
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
     }
 
     // Helper to get author info for commits
@@ -1083,7 +1097,8 @@
             await new Promise((resolve, reject) => {
               reader.onload = async (e) => {
                 try {
-                  const content = e.target.result;
+                  const arrayBuffer = e.target.result;
+                  const base64Content = arrayBufferToBase64(arrayBuffer);
                   const filePath = `${uploadPath}/${file.name}`;
 
                   let sha = null;
@@ -1092,7 +1107,7 @@
                     sha = existing.sha;
                   } catch { }
 
-                  const result = await api.createOrUpdateFile(filePath, content, `Upload ${file.name} to ${state.selectedUploadPath}`, sha);
+                  const result = await api.createOrUpdateFile(filePath, base64Content, `Upload ${file.name} to ${state.selectedUploadPath}`, sha, true);
                   // Capture commit SHA from the response
                   if (result && result.commit && result.commit.sha) {
                     lastCommitSha = result.commit.sha;
@@ -1103,17 +1118,20 @@
                 }
               };
               reader.onerror = reject;
-              reader.readAsText(file);
+              reader.readAsArrayBuffer(file);
             });
           }
 
+
+
+          const uploadedCount = files.length;
           fileInput.value = '';
 
           console.log(`Files uploaded. Commit SHA: ${lastCommitSha}`);
 
           // Check if workflow monitoring is enabled
           if (CONFIG.WORKFLOW_FILE && lastCommitSha) {
-            state.success = `Successfully uploaded ${files.length} file(s) to ${state.selectedUploadPath}. Waiting for GitHub Actions to complete...`;
+            state.success = `Successfully uploaded ${uploadedCount} file(s) to ${state.selectedUploadPath}. Waiting for GitHub Actions to complete...`;
             state.loading = true;
             this.render();
 
@@ -1145,7 +1163,7 @@
             // Reload files in selected path
             await this.selectUploadPath(state.selectedUploadPath);
 
-            state.success = `Upload complete! ${files.length} file(s) added to ${state.selectedUploadPath}`;
+            state.success = `Upload complete! ${uploadedCount} file(s) added to ${state.selectedUploadPath}`;
             state.loading = false;
             this.render();
           } else {
@@ -1194,7 +1212,8 @@
             await new Promise((resolve, reject) => {
               reader.onload = async (e) => {
                 try {
-                  const content = e.target.result;
+                  const arrayBuffer = e.target.result;
+                  const base64Content = arrayBufferToBase64(arrayBuffer);
                   const filePath = `${uploadPath}/${file.name}`;
 
                   let sha = null;
@@ -1203,19 +1222,20 @@
                     sha = existing.sha;
                   } catch { }
 
-                  await api.createOrUpdateFile(filePath, content, `Upload ${file.name}`, sha);
+                  await api.createOrUpdateFile(filePath, base64Content, `Upload ${file.name}`, sha, true);
                   resolve();
                 } catch (error) {
                   reject(error);
                 }
               };
               reader.onerror = reject;
-              reader.readAsText(file);
+              reader.readAsArrayBuffer(file);
             });
           }
 
+          const uploadedCount = files.length;
           fileInput.value = '';
-          state.success = `Successfully uploaded ${files.length} file(s). Refreshing...`;
+          state.success = `Successfully uploaded ${uploadedCount} file(s). Refreshing...`;
           state.loading = false;
           this.render();
 
@@ -1225,7 +1245,7 @@
           this.render();
           await this.navigateToPath(state.currentPath);
 
-          state.success = `Upload complete! ${files.length} file(s) added`;
+          state.success = `Upload complete! ${uploadedCount} file(s) added`;
           state.loading = false;
           this.render();
         } catch (error) {
