@@ -258,6 +258,51 @@
         }
       }
 
+      async commitMultipleFiles(files, message) {
+        if (!this.author || !this.author.email) {
+          throw new Error('Author information (name and email) is required for commits. Please re-login.');
+        }
+
+        const refData = await this.request(`/repos/${this.owner}/${this.repo}/git/ref/heads/${this.branch}`);
+        const baseSha = refData.object.sha;
+
+        const baseCommit = await this.request(`/repos/${this.owner}/${this.repo}/git/commits/${baseSha}`);
+        const baseTreeSha = baseCommit.tree.sha;
+
+        const treeItems = [];
+        for (const file of files) {
+          const blob = await this.request(`/repos/${this.owner}/${this.repo}/git/blobs`, {
+            method: 'POST',
+            body: JSON.stringify({ content: file.base64Content, encoding: 'base64' })
+          });
+          treeItems.push({ path: file.path, mode: '100644', type: 'blob', sha: blob.sha });
+          if (file.onBlobCreated) file.onBlobCreated();
+        }
+
+        const newTree = await this.request(`/repos/${this.owner}/${this.repo}/git/trees`, {
+          method: 'POST',
+          body: JSON.stringify({ base_tree: baseTreeSha, tree: treeItems })
+        });
+
+        const newCommit = await this.request(`/repos/${this.owner}/${this.repo}/git/commits`, {
+          method: 'POST',
+          body: JSON.stringify({
+            message,
+            tree: newTree.sha,
+            parents: [baseSha],
+            author: { name: this.author.name, email: this.author.email },
+            committer: { name: this.author.name, email: this.author.email }
+          })
+        });
+
+        await this.request(`/repos/${this.owner}/${this.repo}/git/refs/heads/${this.branch}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ sha: newCommit.sha })
+        });
+
+        return newCommit;
+      }
+
       async getUser() {
         return this.request('/user');
       }
@@ -1102,48 +1147,54 @@
           const firmwareName = state.selectedFirmware.name;
           const uploadPath = `${firmwareName}/${state.selectedUploadPath}`;
 
-          let lastCommitSha = null;
           const totalFiles = files.length;
           let doneFiles = 0;
 
+          state.uploadProgress = { currentFile: 'Reading files...', done: 0, total: totalFiles };
+          this.render();
+
+          const fileEntries = [];
           for (const file of files) {
-            state.uploadProgress = { currentFile: file.name, done: doneFiles, total: totalFiles };
+            state.uploadProgress = { currentFile: `Reading ${file.name}`, done: doneFiles, total: totalFiles };
             this.render();
 
-            const reader = new FileReader();
-            await new Promise((resolve, reject) => {
-              reader.onload = async (e) => {
-                try {
-                  const arrayBuffer = e.target.result;
-                  const base64Content = arrayBufferToBase64(arrayBuffer);
-                  const filePath = `${uploadPath}/${file.name}`;
-
-                  let sha = null;
-                  try {
-                    const existing = await api.getFile(filePath);
-                    sha = existing.sha;
-                  } catch { }
-
-                  const result = await api.createOrUpdateFile(filePath, base64Content, `Upload ${file.name} to ${state.selectedUploadPath}`, sha, true);
-                  if (result && result.commit && result.commit.sha) {
-                    lastCommitSha = result.commit.sha;
-                  }
-                  doneFiles++;
-                  state.uploadProgress = { currentFile: file.name, done: doneFiles, total: totalFiles };
-                  this.render();
-                  resolve();
-                } catch (error) {
-                  reject(error);
-                }
-              };
+            const base64Content = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (e) => resolve(arrayBufferToBase64(e.target.result));
               reader.onerror = reject;
               reader.readAsArrayBuffer(file);
             });
+
+            doneFiles++;
+            fileEntries.push({
+              path: `${uploadPath}/${file.name}`,
+              base64Content,
+              name: file.name
+            });
           }
 
+          state.uploadProgress = { currentFile: 'Pushing to git...', done: 0, total: totalFiles };
+          this.render();
+
+          let blobsDone = 0;
+          const commitFiles = fileEntries.map(f => ({
+            path: f.path,
+            base64Content: f.base64Content,
+            onBlobCreated: () => {
+              blobsDone++;
+              state.uploadProgress = { currentFile: f.name, done: blobsDone, total: totalFiles };
+              this.render();
+            }
+          }));
+
+          const commitMessage = totalFiles === 1
+            ? `Upload ${fileEntries[0].name} to ${state.selectedUploadPath}`
+            : `Upload ${totalFiles} files to ${state.selectedUploadPath}`;
+
+          const commit = await api.commitMultipleFiles(commitFiles, commitMessage);
+          const lastCommitSha = commit.sha;
+
           state.uploadProgress = null;
-
-
 
           const uploadedCount = files.length;
           fileInput.value = '';
