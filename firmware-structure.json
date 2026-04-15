@@ -5,6 +5,7 @@
     "programs": "Program Files",
     "audio/zing": "Audio Files",
     "actions/random": "Random Actions",
+    "actions/random/dance": "Dance",
     "actions/auto": "Auto/Micro Actions"
   },
   "ZG2.1": {
@@ -13,6 +14,7 @@
     "programs": "Program Files",
     "audio/zing": "Audio Files",
     "actions/random": "Random Actions",
+    "actions/random/dance": "Dance",
     "actions/auto": "Auto/Micro Actions"
   },
   "ZG2.2": {
@@ -21,6 +23,7 @@
     "programs": "Program Files",
     "audio/zing": "Audio Files",
     "actions/random": "Random Actions",
+    "actions/random/dance": "Dance",
     "actions/auto": "Auto/Micro Actions"
   },
   "ZG3.0": {
@@ -29,6 +32,7 @@
     "programs": "Program Files",
     "audio/zing": "Audio Files",
     "actions/random": "Random Actions",
+    "actions/random/dance": "Dance",
     "actions/auto": "Auto/Micro Actions"
   },
   "CW1": {
