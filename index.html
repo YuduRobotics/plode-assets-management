@@ -1433,7 +1433,7 @@
                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
                   onkeypress="if(event.key === 'Enter') app.createFirmware()"
                 />
-                <p class="mt-1 text-xs text-gray-500">Use only letters, numbers, hyphens, and underscores</p>
+                <p class="mt-1 text-xs text-gray-500">Use only letters, numbers, hyphens, dots, and underscores</p>
               </div>
               <div class="flex gap-2">
                 <button onclick="app.createFirmware()" class="flex-1 px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700">
@@ -1451,8 +1451,8 @@
 
       async createFirmware() {
         const name = document.getElementById('firmwareName')?.value.trim();
-        if (!name || !/^[a-zA-Z0-9-_]+$/.test(name)) {
-          alert('Invalid name. Use only letters, numbers, hyphens, and underscores.');
+        if (!name || !/^[a-zA-Z0-9-._]+$/.test(name)) {
+          alert('Invalid name. Use only letters, numbers, hyphens, dots, and underscores.');
           return;
         }
 
